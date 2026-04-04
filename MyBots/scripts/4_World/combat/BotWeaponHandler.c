@@ -15,6 +15,7 @@ class BotWeaponHandler
 	protected bool m_BurstInProgress;
 	static const float AIM_TIME = 0.6;
 	static const float RAISE_DELAY = 0.5;
+	static const float FIRE_RATE = 0.1;  // 100ms между выстрелами в очереди
 
 	void BotWeaponHandler(PlayerBase bot, BotAimController aim)
 	{
@@ -114,11 +115,10 @@ class BotWeaponHandler
 		m_BurstCount = 1;
 		m_BurstInProgress = true;
 
-		// Запускаем таймер для следующих выстрелов в очереди
+		// Запускаем таймер для следующих выстрелов в очереди (ФИКСИРОВАННАЯ ЗАДЕРЖКА)
 		if (m_BurstMax > 1)
 		{
-			float reloadTime = weapon.GetReloadTime(muzzle);
-			int delayMs = (int)(reloadTime * 1000);
+			int delayMs = (int)(FIRE_RATE * 1000);  // 100ms
 			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(BotWeaponHandler.ContinueBurst, delayMs, false, this, weapon);
 		}
 		else
@@ -187,9 +187,8 @@ class BotWeaponHandler
 			return;
 		}
 
-		// Следующий выстрел в burst
-		float reloadTime = weapon.GetReloadTime(muzzle);
-		int delayMs = (int)(reloadTime * 1000);
+		// Следующий выстрел в burst (ФИКСИРОВАННАЯ ЗАДЕРЖКА)
+		int delayMs = (int)(FIRE_RATE * 1000);  // 100ms
 		GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(BotWeaponHandler.ContinueBurst, delayMs, false, self, weapon);
 	}
 
