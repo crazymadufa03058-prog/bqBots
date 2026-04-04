@@ -105,10 +105,8 @@ class BotWeaponHandler
 		Print("[MyBots][FIRE] ProcessWeaponEvent(TRIGGER) weapon=" + weapon.GetType() + " muzzle=" + muzzle + " ammo=" + weapon.GetMagazine(muzzle).GetAmmoCount());
 		weapon.ProcessWeaponEvent(new WeaponEventTrigger(m_Bot));
 
-		// Сброс FSM + досыл патрона после выстрела
-		float reloadTime = weapon.GetReloadTime(muzzle) + 0.05;
-		int delayMs = (int)(reloadTime * 1000);
-		GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(BotWeaponHandler.ResetAndChamberSafe, delayMs, false, this, weapon);
+		m_NextFireTime = now2 + weapon.GetReloadTime(muzzle) + 0.1;
+		return true;
 
 		m_NextFireTime = now2 + Math.RandomFloat(m_FirePauseMin, m_FirePauseMax);
 		return true;
