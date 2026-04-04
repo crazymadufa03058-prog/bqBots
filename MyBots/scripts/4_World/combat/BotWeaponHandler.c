@@ -12,10 +12,11 @@ class BotWeaponHandler
 	protected bool m_IsFiring;
 	protected float m_AimTimer;
 	protected float m_RaiseTimer;
-	protected bool m_BurstInProgress;
+	protected bool m_InBurst;
+	
 	static const float AIM_TIME = 0.6;
 	static const float RAISE_DELAY = 0.5;
-	static const float FIRE_RATE = 0.1;  // 100ms между выстрелами в очереди
+	static const float FIRE_INTERVAL = 0.12;  // интервал между выстрелами в очереди (120ms)
 
 	void BotWeaponHandler(PlayerBase bot, BotAimController aim)
 	{
@@ -31,7 +32,7 @@ class BotWeaponHandler
 		m_IsFiring = false;
 		m_AimTimer = 0;
 		m_RaiseTimer = 0;
-		m_BurstInProgress = false;
+		m_InBurst = false;
 	}
 
 	void SetBurstParams(float pauseMin, float pauseMax, int burstMax)
@@ -60,10 +61,6 @@ class BotWeaponHandler
 			FinishReload();
 		}
 
-		// Если очередь в процессе, не начинаем новую
-		if (m_BurstInProgress)
-			return false;
-
 		// Проверяем стойку через GetMovementState
 		ref HumanMovementState ms = new HumanMovementState();
 		m_Bot.GetMovementState(ms);
@@ -72,6 +69,8 @@ class BotWeaponHandler
 		{
 			m_RaiseTimer = 0;
 			m_AimTimer = 0;
+			m_InBurst = false;
+			m_BurstCount = 0;
 			return false;
 		}
 
@@ -97,7 +96,7 @@ class BotWeaponHandler
 
 		int muzzle = weapon.GetCurrentMuzzle();
 
-		// Проверяем можно ли стрелять (патронник, заедание)
+		// Проверяем можно ли стрелять
 		if (!weapon.CanFire(muzzle))
 		{
 			bool chamberEmpty = weapon.IsChamberEmpty(muzzle);
@@ -105,91 +104,39 @@ class BotWeaponHandler
 			Print("[MyBots][FIRE] weapon.CanFire=false chamberEmpty=" + chamberEmpty + " chamberFiredOut=" + chamberFiredOut);
 			if (chamberEmpty || chamberFiredOut)
 				StartReload(weapon);
+			m_InBurst = false;
+			m_BurstCount = 0;
 			return false;
 		}
 
-		// Первый выстрел в очереди
-		Print("[MyBots][FIRE] ProcessWeaponEvent(TRIGGER) weapon=" + weapon.GetType() + " muzzle=" + muzzle + " ammo=" + weapon.GetMagazine(muzzle).GetAmmoCount());
-		weapon.ProcessWeaponEvent(new WeaponEventTrigger(m_Bot));
-
-		m_BurstCount = 1;
-		m_BurstInProgress = true;
-
-		// Запускаем таймер для следующих выстрелов в очереди (ФИКСИРОВАННАЯ ЗАДЕРЖКА)
-		if (m_BurstMax > 1)
+		// Если это первый выстрел или мы не в очереди - начинаем новую очередь
+		if (!m_InBurst)
 		{
-			int delayMs = (int)(FIRE_RATE * 1000);  // 100ms
-			GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(BotWeaponHandler.ContinueBurst, delayMs, false, this, weapon);
+			m_InBurst = true;
+			m_BurstCount = 1;
+			Print("[MyBots][FIRE] ProcessWeaponEvent(TRIGGER) weapon=" + weapon.GetType() + " muzzle=" + muzzle + " ammo=" + weapon.GetMagazine(muzzle).GetAmmoCount());
+			weapon.ProcessWeaponEvent(new WeaponEventTrigger(m_Bot));
+			m_NextFireTime = now2 + FIRE_INTERVAL;  // Следующий выстрел через FIRE_INTERVAL
+			return true;
 		}
-		else
+
+		// Мы в очереди - проверяем следующий выстрел
+		m_BurstCount++;
+		Print("[MyBots][FIRE] Burst shot " + m_BurstCount + "/" + m_BurstMax);
+		weapon.ProcessWeaponEvent(new WeaponEventTrigger(m_Bot));
+		m_NextFireTime = now2 + FIRE_INTERVAL;
+
+		// Проверяем конец очереди
+		if (m_BurstCount >= m_BurstMax)
 		{
-			m_BurstInProgress = false;
+			m_BurstCount = 0;
+			m_InBurst = false;
 			m_NextFireTime = now2 + Math.RandomFloat(m_FirePauseMin, m_FirePauseMax);
+			Print("[MyBots][FIRE] Burst завершён (" + m_BurstMax + "), пауза " + (m_NextFireTime - now2));
+			return true;
 		}
 
 		return true;
-	}
-
-	// Продолжение очереди выстрелов
-	static void ContinueBurst(BotWeaponHandler self, Weapon_Base weapon)
-	{
-		if (!self || !self.m_Bot || self.m_Bot.IsDamageDestroyed())
-			return;
-
-		if (!weapon || weapon.IsDamageDestroyed())
-			return;
-
-		int muzzle = weapon.GetCurrentMuzzle();
-
-		// Проверяем патронник и досылаем патрон если нужно
-		if (weapon.IsChamberEmpty(muzzle) || weapon.IsChamberFiredOut(muzzle))
-		{
-			Magazine mag = weapon.GetMagazine(muzzle);
-			if (mag && mag.GetAmmoCount() > 0)
-			{
-				float damage;
-				string type;
-				if (mag.LocalAcquireCartridge(damage, type))
-				{
-					weapon.PushCartridgeToChamber(muzzle, damage, type);
-					weapon.SelectionBulletShow();
-				}
-			}
-			else
-			{
-				Print("[MyBots][FIRE] Magazine empty during burst, starting reload");
-				self.StartReload(weapon);
-				self.m_BurstInProgress = false;
-				return;
-			}
-		}
-
-		// Проверяем можно ли стрелять
-		if (!weapon.CanFire(muzzle))
-		{
-			Print("[MyBots][FIRE] CanFire=false during burst");
-			self.StartReload(weapon);
-			self.m_BurstInProgress = false;
-			return;
-		}
-
-		// Выстрел
-		self.m_BurstCount++;
-		Print("[MyBots][FIRE] Burst shot " + self.m_BurstCount + "/" + self.m_BurstMax);
-		weapon.ProcessWeaponEvent(new WeaponEventTrigger(self.m_Bot));
-
-		// Проверяем конец очереди
-		if (self.m_BurstCount >= self.m_BurstMax)
-		{
-			Print("[MyBots][FIRE] Burst завершён (" + self.m_BurstMax + "), пауза");
-			self.m_BurstInProgress = false;
-			self.m_NextFireTime = GetGame().GetTickTime() + Math.RandomFloat(self.m_FirePauseMin, self.m_FirePauseMax);
-			return;
-		}
-
-		// Следующий выстрел в burst (ФИКСИРОВАННАЯ ЗАДЕРЖКА)
-		int delayMs = (int)(FIRE_RATE * 1000);  // 100ms
-		GetGame().GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(BotWeaponHandler.ContinueBurst, delayMs, false, self, weapon);
 	}
 
 	void StopFire()
@@ -198,13 +145,16 @@ class BotWeaponHandler
 		m_AimTimer = 0;
 		m_RaiseTimer = 0;
 		m_BurstCount = 0;
-		m_BurstInProgress = false;
+		m_InBurst = false;
 	}
 
 	void StartReload(Weapon_Base weapon = null)
 	{
 		if (!weapon)
 			weapon = Weapon_Base.Cast(m_Bot.GetItemInHands());
+
+		m_InBurst = false;
+		m_BurstCount = 0;
 
 		if (weapon)
 		{
@@ -226,26 +176,12 @@ class BotWeaponHandler
 						weapon.SelectionBulletShow();
 						Print("[MyBots][RELOAD] Патрон дослан damage=" + damage + " type=" + type);
 					}
-					else
-					{
-						Print("[MyBots][RELOAD][ERROR] LocalAcquireCartridge failed");
-					}
 				}
-
 				m_IsReloading = false;
 				m_AimTimer = 0;
 				m_RaiseTimer = 0;
-				m_BurstInProgress = false;
 				return;
 			}
-			else
-			{
-				Print("[MyBots][RELOAD][ERROR] No magazine on " + weapon.GetType());
-			}
-		}
-		else
-		{
-			Print("[MyBots][RELOAD][ERROR] No weapon in hands");
 		}
 
 		m_IsReloading = true;
@@ -263,12 +199,10 @@ class BotWeaponHandler
 		}
 
 		int muzzle = weapon.GetCurrentMuzzle();
-
 		Magazine mag = Magazine.Cast(weapon.GetAttachmentByType(Magazine));
 		if (mag)
 		{
 			mag.ServerSetAmmoCount(mag.GetAmmoMax());
-
 			if (weapon.IsChamberEmpty(muzzle) || weapon.IsChamberFiredOut(muzzle))
 			{
 				float damage;
@@ -284,7 +218,8 @@ class BotWeaponHandler
 		m_IsReloading = false;
 		m_AimTimer = 0;
 		m_RaiseTimer = 0;
-		m_BurstInProgress = false;
+		m_InBurst = false;
+		m_BurstCount = 0;
 		Print("[MyBots][RELOAD] Перезарядка завершена");
 	}
 
