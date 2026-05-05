@@ -1,0 +1,80 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<fsm name="Fighting" type="eAI">
+	<files />
+	<states default="Positioning">
+		<state name="Positioning" class="eAIState_Fighting_Positioning">
+			<editor_data>
+				<position x="891" y="714" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="Evade" class="eAIState_Fighting_Evade">
+			<editor_data>
+				<position x="518.636363636364" y="715.727272727273" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="FireWeapon" class="eAIState_Fighting_FireWeapon">
+			<editor_data>
+				<position x="618.636363636364" y="715.727272727273" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="Melee" class="eAIState_Fighting_Melee">
+			<editor_data>
+				<position x="1155" y="711" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+	</states>
+	<transitions>
+		<transition>
+			<editor_data>
+				<position_source x="1229" y="680" />
+				<position_destination x="1228" y="711" />
+			</editor_data>
+			<guard>
+				return dst.Guard();
+			</guard>
+			<event />
+			<from_state />
+			<to_state name="Melee" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1229" y="680" />
+				<position_destination x="1228" y="711" />
+			</editor_data>
+			<guard>
+				return dst.Guard();
+			</guard>
+			<event />
+			<from_state />
+			<to_state name="Evade" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="696.636363636364" y="687.727272727273" />
+				<position_destination x="696.636363636364" y="715.727272727273" />
+			</editor_data>
+			<guard>
+				return dst.Guard();
+			</guard>
+			<event />
+			<from_state />
+			<to_state name="FireWeapon" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="970" y="682" />
+				<position_destination x="969" y="714" />
+			</editor_data>
+			<guard>
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state />
+			<to_state name="Positioning" />
+		</transition>
+	</transitions>
+</fsm>

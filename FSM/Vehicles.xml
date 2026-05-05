@@ -1,0 +1,230 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<fsm name="Vehicles" type="eAI">
+	<files />
+	<variables>
+		<variable name="entity" type="EntityAI" />
+		<variable name="seat" type="int" />
+	</variables>
+	<states default="GoToVehicle">
+		<state name="GoToVehicle" class="eAIState_GoToVehicle">
+			<editor_data>
+				<position x="1149.9818389093" y="451.533421790161" />
+				<size width="150" height="40" />
+			</editor_data>
+			<event_entry>
+				m_Entity = fsm.entity;
+				m_Seat = fsm.seat;
+				
+				super.OnEntry(Event, null);
+				
+				unit.OverrideMovementDirection(false, 0);
+				unit.OverrideMovementSpeed(false, 0);
+			</event_entry>
+		</state>
+		<state name="GetInVehicle" class="eAIState_GetInVehicle">
+			<editor_data>
+				<position x="1239" y="550.644739300538" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="GetOutVehicle" class="eAIState_GetOutVehicle">
+			<editor_data>
+				<position x="1239" y="550.644739300538" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="OpenVehicleDoor" class="eAIState_OpenVehicleDoor">
+			<editor_data>
+				<position x="1239" y="550.644739300538" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+		<state name="CloseVehicleDoor" class="eAIState_CloseVehicleDoor">
+			<editor_data>
+				<position x="1239" y="550.644739300538" />
+				<size width="150" height="40" />
+			</editor_data>
+		</state>
+
+		<state name="Sitting">
+			<variables />
+			<editor_data>
+				<position x="1239.82498598693" y="781.144645880103" />
+				<size width="150" height="40" />
+			</editor_data>
+			<event_entry />
+			<event_exit />
+			<event_update>
+				return EXIT;
+			</event_update>
+		</state>
+	</states>
+	<transitions>
+		<transition>
+			<editor_data>
+				<position_source x="1260" y="491.533421790161" />
+				<position_destination x="1313" y="550.644739300538" />
+			</editor_data>
+			<guard>
+				if (vector.DistanceSq(unit.GetPosition(), src.m_Position) &gt; 1.0) return FAIL;
+				if (!src.m_Transport.IsAreaAtDoorFree(src.m_Seat)) return FAIL;
+				if (src.m_Transport.CrewMember(src.m_Seat) || (src.m_Vehicle.IsSeatReservedByOther(src.m_Seat, unit))) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="GoToVehicle" />
+			<to_state name="OpenVehicleDoor" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1260" y="491.533421790161" />
+				<position_destination x="1313" y="550.644739300538" />
+			</editor_data>
+			<guard>
+				//auto group = unit.GetGroup();
+				//if (!group) return FAIL;
+				//
+				//auto leader = group.GetFormationLeader();
+				//if (leader &amp;&amp; leader != unit)
+				//{
+				//	if (!leader.IsInTransport()) return FAIL;
+				//}
+				
+				if (vector.DistanceSq(unit.GetPosition(), src.m_Position) &lt; 1.0) return FAIL;
+				
+				if (unit.GetThreatToSelf() &gt;= 0.4) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="GoToVehicle" />
+			<to_state name="GoToVehicle" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1312.25419083697" y="590.644739300538" />
+				<position_destination x="1312.25419083697" y="629.019715945429" />
+			</editor_data>
+			<guard>
+				if (vector.DistanceSq(unit.GetPosition(), src.m_Position) &gt; 1.0) return FAIL;
+				if (unit.IsInTransport()) return FAIL;
+				if (!src.m_Transport.CrewCanGetThrough(src.m_Seat) || !src.m_Transport.IsAreaAtDoorFree(src.m_Seat)) return FAIL;
+				if (src.m_Transport.CrewMember(src.m_Seat) || (src.m_Vehicle.IsSeatReservedByOther(src.m_Seat, unit))) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="OpenVehicleDoor" />
+			<to_state name="GetInVehicle" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1312.25419083697" y="669.019715945429" />
+				<position_destination x="1314.38313869708" y="710.749953289782" />
+			</editor_data>
+			<guard>
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="GetInVehicle" />
+			<to_state name="CloseVehicleDoor" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1311.4318211867" y="821.144645880103" />
+				<position_destination x="1308.43814240661" y="862.453840426607" />
+			</editor_data>
+			<guard>
+				if (unit.IsUnconscious()) return FAIL;
+				
+				auto group = unit.GetGroup();
+				if (!group) return FAIL;
+				
+				auto leader = group.GetFormationLeader();
+				if (leader &amp;&amp; leader != unit)
+				{
+					if (group.GetFormationState() != eAIGroupFormationState.IN || leader.GetParent() == unit.GetParent())
+						return FAIL;
+				}
+				
+				if (!dst.m_Transport.IsAreaAtDoorFree(dst.m_Seat)) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="Sitting" />
+			<to_state name="OpenVehicleDoor" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1307.17392546649" y="902.453840426607" />
+				<position_destination x="1310.98813306457" y="939.143311463732" />
+			</editor_data>
+			<guard>
+				if (unit.IsUnconscious()) return FAIL;
+				
+				if (!unit.IsInTransport()) return FAIL;
+				
+				if (!src.m_Transport.CrewCanGetThrough(src.m_Seat) || !src.m_Transport.IsAreaAtDoorFree(src.m_Seat)) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="OpenVehicleDoor" />
+			<to_state name="GetOutVehicle" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1307.91602974627" y="979.143311463732" />
+				<position_destination x="1307.30694995732" y="1020.27987125479" />
+			</editor_data>
+			<guard>
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="GetOutVehicle" />
+			<to_state name="CloseVehicleDoor" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1312.12524297686" y="750.749953289782" />
+				<position_destination x="1313.68971690692" y="781.144645880103" />
+			</editor_data>
+			<guard>
+				if (!unit.IsInTransport()) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="CloseVehicleDoor,Sitting,OpenVehicleDoor" />
+			<to_state name="Sitting" />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1307.4738019182" y="1060.27987125479" />
+				<position_destination x="1305.61352816716" y="1108.33240728083" />
+			</editor_data>
+			<guard>
+				if (unit.IsInTransport()) return FAIL;
+				
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="CloseVehicleDoor,OpenVehicleDoor" />
+			<to_state />
+		</transition>
+		<transition>
+			<editor_data>
+				<position_source x="1307.4738019182" y="1060.27987125479" />
+				<position_destination x="1305.61352816716" y="1108.33240728083" />
+			</editor_data>
+			<guard>
+				return SUCCESS;
+			</guard>
+			<event />
+			<from_state name="GoToVehicle" />
+			<to_state />
+		</transition>
+	</transitions>
+</fsm>

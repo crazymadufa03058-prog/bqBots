@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<modded_inputs>
+	<inputs>
+		<actions>
+			<input name="eAICommandMenu" loc="STR_EXPANSION_AI_COMMAND_MENU"/>
+			<input name="eAISetWaypoint" loc="STR_EXPANSION_AI_SET_WAYPOINT"/>
+			<input name="eAITestInput" visible="false" />
+
+			<input name="eAITestLRIncrease" visible="false" />
+			<input name="eAITestLRDecrease" visible="false" />
+
+			<input name="eAITestUDIncrease" visible="false" />
+			<input name="eAITestUDDecrease" visible="false" />
+		</actions>
+
+		<sorting name="expansion" loc="STR_EXPANSION_LABEL">
+			<input name="eAICommandMenu" />
+			<input name="eAISetWaypoint" />
+			<input name="eAITestInput" />
+			<input name="eAITestLRIncrease" />
+			<input name="eAITestLRDecrease" />
+			<input name="eAITestUDIncrease" />
+			<input name="eAITestUDDecrease" />
+		</sorting>
+	</inputs>
+	<preset>
+		<input name="eAICommandMenu">
+			<btn name="kT"/>
+		</input>
+		<input name="eAISetWaypoint">
+			<btn name="kLControl">
+				<btn name="mBLeft"/>
+			</btn>
+		</input>
+		<input name="eAITestInput">
+			<btn name="kY"/>
+		</input>
+		<input name="eAITestLRIncrease">
+			<btn name="kRight"/>
+		</input>
+		<input name="eAITestLRDecrease">
+			<btn name="kLeft"/>
+		</input>
+		<input name="eAITestUDIncrease">
+			<btn name="kUp"/>
+		</input>
+		<input name="eAITestUDDecrease">
+			<btn name="kDown"/>
+		</input>
+	</preset>
+</modded_inputs>

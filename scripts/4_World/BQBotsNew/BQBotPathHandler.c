@@ -1,0 +1,3 @@
+class BQBotPathHandler : bqCombatPathHandler
+{
+}

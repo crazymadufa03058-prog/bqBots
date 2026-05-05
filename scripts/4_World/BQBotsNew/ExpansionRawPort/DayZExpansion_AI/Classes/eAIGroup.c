@@ -1,0 +1,1539 @@
+// TODO: sync to the client automatically within DayZPlayerImplement
+//  only data that needs to be known is just the id, members and faction
+class eAIGroup
+{
+	static const int VERSION = 1;
+	static const string BASENAME = "group.bin";
+
+	private static autoptr array<ref eAIGroup> s_AllGroups = new array<ref eAIGroup>();
+	static ref array<eAIGroup> s_PersistentGroups = {};
+	static int s_eAI_CurrentPersistIndex = -1;
+
+	private static int s_IDCounter = 0;
+
+	private autoptr array<eAITargetInformation> m_Targets = {};
+	private int m_ID;
+	int m_NextGroupMemberID;
+
+	//! Refer to eAIGroup::GetTargetInformation
+	private autoptr eAIGroupTargetInformation m_TargetInformation;
+
+	// Ordered array of group members. 0 is the leader.
+	private autoptr array<DayZPlayerImplement> m_Members = {};
+	private autoptr array<DayZPlayerImplement> m_Members_Deceased = {};
+	private int m_MemberCount = 1;
+
+	// What formation the group should keep
+	private autoptr eAIFormation m_Form;
+
+	// Group identity
+	private ref eAIFaction m_Faction;
+	private string m_Name;
+	bool m_Persist;
+	string m_BaseName;
+
+	private autoptr array<vector> m_Waypoints;
+	private eAIWaypointBehavior m_WaypointBehaviour = eAIWaypointBehavior.ALTERNATE;
+	int m_CurrentWaypointIndex;
+	bool m_BackTracking;
+	vector m_CurrentWaypoint;
+	bool m_RoamingLocal;
+
+	ref array<ref ExpansionAIRoamingLocation> m_RoamingLocations = {};
+	//vector m_CurrentRoamingLocationPosition;
+	ref set<BuildingBase> m_VisitedBuildings = new set<BuildingBase>;
+	ref set<Object> m_VisitedCrashSites =  new set<Object>;
+	ref ExpansionAIRoamingLocation m_RoamingLocation;
+	float m_RoamingLocationReachedTimestamp;
+	int m_ClearVisitedBuildingsOnLocationReached;
+
+	private eAIGroupFormationState m_FormationState = eAIGroupFormationState.IN;
+
+	bool m_UpdateSearchPosition;
+	protected bool m_IsInCombat;
+	int m_DangerousAreaAvoidanceDirection;
+
+	bool m_Leave;
+	bool m_ForcePatrolDespawn;
+	float m_LastHitTime;
+
+	// return the group owned by leader, otherwise create a new one.
+	static eAIGroup GetGroupByLeader(DayZPlayerImplement leader, bool createIfNoneExists = true, eAIFaction faction = null, bool autoDeleteFormerGroupIfEmpty = true)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		for (int i = 0; i < s_AllGroups.Count(); i++)
+			if (s_AllGroups[i].GetLeader() == leader)
+				return s_AllGroups[i];
+
+		if (!createIfNoneExists)
+			return null;
+
+		eAIGroup group = CreateGroup(faction);
+		leader.SetGroup(group, autoDeleteFormerGroupIfEmpty);
+		return group;
+	}
+
+	static eAIGroup GetGamePlayerGroup()
+	{
+		DayZPlayerImplement player;
+		eAIGroup group;
+
+		if (Class.CastTo(player, g_Game.GetPlayer()))
+			group = player.GetGroup();
+
+		return group;
+	}
+
+	override string GetDebugName()
+	{
+		string str = ToString();
+		
+		str += ", ";
+		str += "faction=" + m_Faction;
+
+		return str;
+	}
+
+	static array<ref eAIGroup> GetAll()
+	{
+		return s_AllGroups;
+	}
+
+	static eAIGroup GetGroupByID(int id, bool createIfNoneExists = false)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		for (int i = 0; i < s_AllGroups.Count(); i++)
+			if (s_AllGroups[i].GetID() == id)
+				return s_AllGroups[i];
+
+		if (!createIfNoneExists)
+			return null;
+
+		eAIGroup group = new eAIGroup();
+		group.m_ID = id;
+		return group;
+	}
+
+	static eAIGroup CreateGroup(eAIFaction faction = null)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		eAIGroup group = new eAIGroup(faction);
+
+		s_IDCounter++;
+		group.m_ID = s_IDCounter;
+
+		return group;
+	}
+
+	//! Prevent 3rd party mods from doing stupid shit when -newErrorsAreWarnings=1 as this would result in NULL pointers later
+	static eAIGroup CreateGroup(Class faction)
+	{
+		TStringArray stack = {};
+		if (faction)
+		{
+			string tmp;
+			DumpStackString(tmp);
+			tmp.Split("\n", stack);
+			stack.RemoveOrdered(0);
+			EXError.Error(null, "FIX-ME: Unsafe down-casting, use 'eAIFaction.Cast' for safe down-casting", stack);
+		}
+
+		return CreateGroup();
+	}
+
+	static void DeleteGroup(eAIGroup group)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, eAIGroup, "" + group);
+#endif
+
+		int index = s_AllGroups.Find(group);
+		if (index > -1)
+		{
+		#ifdef DIAG_DEVELOPER
+			EXTrace.Print(EXTrace.AI, eAIGroup, "Removing group from s_AllGroups");
+		#endif
+			s_AllGroups.Remove(index);
+		}
+
+		if (group && group.m_Persist && group.m_BaseName)
+			s_PersistentGroups.RemoveItem(group);
+	}
+
+	private void eAIGroup(eAIFaction faction = null)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		m_TargetInformation = new eAIGroupTargetInformation(this);
+
+		m_Form = new eAIFormationVee(this);
+
+		if (faction)
+			m_Faction = faction;
+		else
+			m_Faction = new eAIFactionRaiders();
+
+		m_Waypoints = new array<vector>();
+
+		s_AllGroups.Insert(this);
+		Print("[EAI] [group_create] group=" + this.ToString() + " faction=" + m_Faction.ClassName() + " formation=" + m_Form.ClassName());
+	}
+
+	/*private*/ void ~eAIGroup()
+	{
+		if (!g_Game)
+			return;
+
+	#ifdef DIAG_DEVELOPER
+		EXTrace.Print(EXTrace.AI, this, "~eAIGroup");
+	#endif
+
+		DeleteGroup(this);
+	}
+
+	void Delete()
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this);
+#endif
+
+		g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Call(DeleteGroup, this);
+	}
+
+	void AddWaypoint(vector pos)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		m_Waypoints.Insert(pos);
+	}
+
+	array<vector> GetWaypoints()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Waypoints;
+	}
+
+	void SetCurrentWaypoint(vector pos)
+	{
+		m_CurrentWaypoint = pos;
+	}
+
+	vector GetCurrentWaypoint()
+	{
+		return m_CurrentWaypoint;
+	}
+
+	void ClearWaypoints()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		m_Waypoints.Clear();
+		m_CurrentWaypointIndex = 0;
+	}
+
+	void SetWaypointBehaviour(eAIWaypointBehavior bhv)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		m_RoamingLocal = false;
+
+		switch (bhv)
+		{
+			case eAIWaypointBehavior.HALT_OR_LOOP:
+				if (Math.RandomIntInclusive(0, 1))
+					bhv = eAIWaypointBehavior.HALT;
+				else
+					bhv = eAIWaypointBehavior.LOOP;
+				break;
+
+			case eAIWaypointBehavior.HALT_OR_ALTERNATE:
+				if (Math.RandomIntInclusive(0, 1))
+					bhv = eAIWaypointBehavior.HALT;
+				else
+					bhv = eAIWaypointBehavior.ALTERNATE;
+				break;
+
+			case eAIWaypointBehavior.LOOP_OR_ALTERNATE:
+				SetWaypointBehaviourAuto(eAIWaypointBehavior.ALTERNATE);
+				return;
+
+			case eAIWaypointBehavior.ROAMING_LOCAL:
+				bhv = eAIWaypointBehavior.ROAMING;
+				m_RoamingLocal = true;
+				break;
+		}
+
+		m_WaypointBehaviour = bhv;
+	}
+
+	/**
+	 * @brief Set waypoint behavior automatically based on proximity of 1st and last waypoint to one another
+	 * 
+	 * If 1st and last waypoints are close (within 1.5 m) to one another, waypoint behavior will be set to LOOP.
+	 * If they are not close, it will be set to the passed in behavior (default ALTERNATE).
+	 */
+	void SetWaypointBehaviourAuto(eAIWaypointBehavior bhv = eAIWaypointBehavior.ALTERNATE)
+	{
+		int count = m_Waypoints.Count();
+
+		if (count > 1 && vector.DistanceSq(m_Waypoints[0], m_Waypoints[count - 1]) <= 2.25)
+			SetWaypointBehaviour(eAIWaypointBehavior.LOOP);
+		else
+			SetWaypointBehaviour(bhv);
+	}
+
+	eAIWaypointBehavior GetWaypointBehaviour()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_WaypointBehaviour;
+	}
+
+	/**
+	 * @brief Find roaming location that is closest to formation leader
+	 */
+	vector FindClosestRoamingLocationPosition()
+	{
+		if (Count() == 0)
+			return vector.Zero;
+
+	#ifdef DIAG_DEVELOPER
+		auto timeIt = new EXTimeIt();
+	#endif
+
+		auto leader = GetFormationLeader();
+		vector position = leader.GetPosition();
+
+		//if (m_CurrentRoamingLocationPosition != vector.Zero)
+		//{
+			//if (vector.DistanceSq(position, m_CurrentRoamingLocationPosition) > 0.3)
+				//return m_CurrentRoamingLocationPosition;
+		//}
+
+		auto settings = GetExpansionSettings().GetAILocation();
+
+		float distSq;
+		int distKey;
+		TIntArray distances = {};
+		map<int, BuildingBase> buildingsByDistance;
+
+		TStringArray excludedBuildings = settings.ExcludedRoamingBuildings;
+
+		//! When looting buildings, stay at most 10 minutes (600 seconds) in the area before moving on to next map location
+		float locationTime;
+		if (m_RoamingLocationReachedTimestamp > 0.0)
+			locationTime = g_Game.GetTickTime() - m_RoamingLocationReachedTimestamp;
+
+		BuildingBase building;
+		string buildingType;
+
+		eAIBase ai;
+		if (Class.CastTo(ai, leader) && ai.m_eAI_PotentialCoverObjects.Count() > 0 && (m_RoamingLocal || locationTime < Math.RandomFloat(300.0, 600.0)))
+		{
+			buildingsByDistance = new map<int, BuildingBase>;
+
+			foreach (Object obj: ai.m_eAI_PotentialCoverObjects)
+			{
+				if (!Class.CastTo(building, obj) || building.GetDoorCount() == 0)
+					continue;
+
+				buildingType = building.GetType();
+				buildingType.ToLower();
+				if (ExpansionString.StartsWithAny(buildingType, excludedBuildings))
+					continue;
+
+				if (m_VisitedBuildings.Find(building) > -1)
+					continue;
+
+				distSq = vector.DistanceSq(position, obj.GetPosition());
+
+				distKey = distSq;
+				distances.Insert(distKey);
+				buildingsByDistance[distKey] = building;
+			}
+
+			if (m_RoamingLocal && distances.Count() < 3)
+			{
+				distances.Clear();
+				m_VisitedBuildings.Clear();
+			}
+		}
+
+		vector destinationPosition;
+
+	#ifdef DIAG_DEVELOPER
+		string destinationName;
+	#endif
+
+		BuildingBase destinationBuilding;
+
+		if (distances.Count() > 0)
+		{
+			distances.Sort();
+
+			destinationBuilding = buildingsByDistance[distances[0]];
+
+			m_VisitedBuildings.Insert(destinationBuilding);
+
+			destinationPosition = destinationBuilding.eAI_GetRoamingPosition(position);
+
+			if (ai && ai.GetMovementSpeedLimit() >= 2)
+				ai.SetMovementSpeedLimit(2, true);
+
+			m_RoamingLocation = new ExpansionAIRoamingLocation(destinationPosition, 30.0, "", "Building", destinationBuilding.GetType(), destinationBuilding);
+
+		#ifdef DIAG_DEVELOPER
+			destinationName = destinationBuilding.GetType();
+		#endif
+		}
+		else
+		{
+			//! Initial
+			if (m_RoamingLocations.Count() == 0)
+				ExpansionArray<ExpansionAIRoamingLocation>.RefCopy(settings.RoamingLocations, m_RoamingLocations);
+
+			map<int, ref ExpansionAIRoamingLocation> locationsByDistance = new map<int, ref ExpansionAIRoamingLocation>;
+
+			foreach (ExpansionAIRoamingLocation location: m_RoamingLocations)
+			{
+				if (!location.Enabled)
+					continue;  //! excluded
+
+				//! @note we shave off a zero by taking the 10% value to make it less likely to run into 32-bit integer limits
+				distSq = vector.DistanceSq(position, location.Position) * 0.1;
+
+				//if (location.Type.Contains("ViewPoint") || location.Type.Contains("Hill"))
+					//distSq *= Math.RandomFloat(9.0, 10.0);  //! Make less likely to be picked by increasing distance by some large random factor
+				//else
+					distSq *= Math.RandomFloat(0.64, 1.44);  //! Bit of randomization (+/- 20%)
+
+				distKey = distSq;
+				distances.Insert(distKey);
+				locationsByDistance[distKey] = location;
+			}
+
+			if (distances.Count() < 2)
+				ExpansionArray<ExpansionAIRoamingLocation>.RefCopy(settings.RoamingLocations, m_RoamingLocations);
+
+			for (int i = m_VisitedCrashSites.Count() - 1; i >= 0; i--)
+			{
+				if (!m_VisitedCrashSites[i])
+					m_VisitedCrashSites.Remove(i);
+			}
+
+			//! If last visited roaming location wasn't a helicrash, consider helicrashes
+			if (!m_RoamingLocation || m_RoamingLocation.Type != "StaticHeliCrash")
+			{
+				CF_DoublyLinkedNode_WeakRef<CrashBase> node = CrashBase.s_Expansion_HeliCrashes.m_Head;
+				while (node)
+				{
+					CrashBase crash = node.m_Value;
+
+					node = node.m_Next;
+
+					if (m_VisitedCrashSites.Find((Object)crash) > -1)
+						continue;
+
+					//! @note we shave off a zero by taking the 10% value to make it less likely to run into 32-bit integer limits
+					distSq = vector.DistanceSq(position, crash.GetPosition()) * 0.1;
+					distSq *= Math.RandomFloat(0.64, 1.44);  //! Bit of randomization (+/- 20%)
+
+					distKey = distSq;
+					distances.Insert(distKey);
+					locationsByDistance[distKey] = new ExpansionAIRoamingLocation(crash.GetPosition(), 30.0, "", "StaticHeliCrash", crash.GetType(), crash);
+				}
+			}
+
+			if (distances.Count() == 0)
+				return vector.Zero;
+
+			distances.Sort();
+
+			ExpansionAIRoamingLocation destination = locationsByDistance[distances[0]];
+
+		#ifdef DIAG_DEVELOPER
+			destinationName = destination.Name;
+		#endif
+
+			if (destination.Type != "StaticHeliCrash")
+			{
+				float radius = destination.Radius;
+
+				vector center = ExpansionStatic.GetSurfacePosition(destination.Position);
+				float extent = Math.Min(Math.Max(radius, 200), 400);
+				vector min = Vector(center[0] - extent, center[1] - extent, center[2] - extent);
+				vector max = Vector(center[0] + extent, center[1] + extent, center[2] + extent);
+	
+			#ifdef DIAG_DEVELOPER
+				EXTrace.Print(EXTrace.AI, this, "Searching for buildings in " + destinationName + " at " + ExpansionStatic.VectorToString(center));
+				EXTrace.Print(EXTrace.AI, this, "Location radius " + radius);
+				EXTrace.Print(EXTrace.AI, this, "Box side length " + (extent * 2));
+				auto timeIt2 = new EXTimeIt();
+			#endif
+
+				array<EntityAI> candidates = {};
+				DayZPlayerUtils.SceneGetEntitiesInBox(min, max, candidates, QueryFlags.STATIC | QueryFlags.ORIGIN_DISTANCE);
+
+			#ifdef DIAG_DEVELOPER
+				EXTrace.Print(EXTrace.AI, this, "Found " + candidates.Count() + " candidates (" + timeIt2.GetElapsedMS() + "ms)");
+				timeIt2.Start();
+			#endif
+
+				//! Pick a random candidate, if candidate is not excluded, loop ends instantly. If candidate is excluded,
+				//! it is removed from the pool and loop is repeated until a suitable candidate is found, all candidates have been exhausted
+				//! or limit is reached.
+				//! In the general case, we only have to check a few candidates until we find one that's not excluded.
+				//! In the optimal case, we only have to check one even if there are multiple candidates.
+				//! In the worst case, we check up to 100 with no match, but this case should be rare.
+				//! This approach is about 50 times faster on avg compared to pre-filtering the entities before picking.
+				int n;
+				EntityAI candidate;
+				for (n = 1; n <= candidates.Count() && n <= 100; n++)
+				{
+					int index = candidates.GetRandomIndex();
+					candidate = candidates[index];
+
+					if (Class.CastTo(destinationBuilding, candidate) && destinationBuilding.GetDoorCount() > 0)
+					{
+						buildingType = destinationBuilding.GetType();
+						buildingType.ToLower();
+						if (!ExpansionString.StartsWithAny(buildingType, excludedBuildings))
+							break;
+					}
+
+					candidates.Remove(index);
+				}
+
+				if (n <= candidates.Count() && n <= 100)
+				{
+				#ifdef DIAG_DEVELOPER
+					EXTrace.Print(EXTrace.AI, this, "Found suitable candidate after " + n + " random picks (" + timeIt2.GetElapsedMS() + "ms)");
+				#endif
+
+					m_VisitedBuildings.Insert(destinationBuilding);
+					destinationPosition = destinationBuilding.eAI_GetRoamingPosition(position);
+
+				#ifdef DIAG_DEVELOPER
+					destinationName = destinationBuilding.GetType() + " in " + destinationName;
+				#endif
+				}
+				else
+				{
+				#ifdef DIAG_DEVELOPER
+					if (n > 1)
+						EXTrace.Print(EXTrace.AI, this, "Found no suitable candidate after " + n + " random picks (" + timeIt2.GetElapsedMS() + "ms)");
+				#endif
+
+					destinationPosition = ExpansionMath.GetRandomPointInCircle(destination.Position, radius * 0.25);
+					destinationPosition = ExpansionStatic.GetSurfaceRoadPosition(destinationPosition[0], destinationPosition[2], RoadSurfaceDetection.CLOSEST);
+				}
+			}
+			else
+			{
+				m_VisitedCrashSites.Insert(destination.m_Object);
+				destinationPosition = ExpansionMath.GetRandomPointInRing(destination.Position, 5.0, 20.0);
+				destinationPosition = ExpansionStatic.GetSurfaceRoadPosition(destinationPosition[0], destinationPosition[2], RoadSurfaceDetection.CLOSEST);
+			}
+
+			//! If next destination is > 500 m from formation leader position, "forget" visited buildings
+			if (vector.DistanceSq(position, destinationPosition) > 250000.0)
+				m_ClearVisitedBuildingsOnLocationReached = m_VisitedBuildings.Count();
+			else
+				m_ClearVisitedBuildingsOnLocationReached = 0;
+
+			if (ai && ai.GetMovementSpeedLimit() >= 2)
+				ai.SetMovementSpeedLimit(3, true);
+
+			m_RoamingLocation = destination;
+		}
+
+	#ifdef DIAG_DEVELOPER
+		string msg = "Selected " + destinationName + " at " + ExpansionStatic.VectorToString(destinationPosition) + " (" + timeIt.GetElapsedMS() + "ms)";
+		EXTrace.Print(EXTrace.AI, leader, msg);
+		ExpansionStatic.MessageNearPlayers(position, 100.0, leader.ToString() + " " + msg);
+	#endif
+
+		return destinationPosition;
+	}
+
+	void SetRoamingLocationReached(bool clearVisitedBuildings = false)
+	{
+		if (m_RoamingLocation && m_RoamingLocation.Type != "Building")
+		{
+			bool clearVisitedBuildingsOnLocationReached;
+
+			if (m_ClearVisitedBuildingsOnLocationReached && clearVisitedBuildings)
+				clearVisitedBuildingsOnLocationReached = true;
+
+			if (clearVisitedBuildingsOnLocationReached)
+			{
+				if (m_ClearVisitedBuildingsOnLocationReached >= m_VisitedBuildings.Count())
+				{
+					EXTrace.Print(EXTrace.AI, this, "Clearing " + m_VisitedBuildings.Count() + "/" + m_ClearVisitedBuildingsOnLocationReached + " visited buildings");
+					m_VisitedBuildings.Clear();
+				}
+				else
+				{
+					EXTrace.Print(EXTrace.AI, this, "Clearing " + m_ClearVisitedBuildingsOnLocationReached + "/" + m_VisitedBuildings.Count() + " visited buildings");
+					for (int i = m_ClearVisitedBuildingsOnLocationReached - 1; i >= 0; i--)
+					{
+						m_VisitedBuildings.Remove(i);
+					}
+				}
+			}
+
+			if (m_VisitedBuildings.Count() == 0 || clearVisitedBuildingsOnLocationReached)
+				m_RoamingLocationReachedTimestamp = g_Game.GetTickTime();
+
+			//! Remove destination from roaming locations if not a helicrash (helicrashes are events and not in roaming locations)
+			if (!m_RoamingLocal && m_RoamingLocation.Type != "StaticHeliCrash")
+				m_RoamingLocations.RemoveItemUnOrdered(m_RoamingLocation);
+		}
+	}
+
+	void SetFormationState(eAIGroupFormationState state)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		m_FormationState = state;
+	}
+
+	eAIGroupFormationState GetFormationState()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_FormationState;
+	}
+
+	void SetFaction(eAIFaction f)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.StartStack(EXTrace.AI, this, "" + f);
+#endif
+
+		if (!f)
+		{
+			Error("Cannot set NULL faction");
+			return;
+		}
+
+		int oldFactionTypeID = m_Faction.GetTypeID();
+		int newFactionTypeID = f.GetTypeID();
+
+		m_Faction = f;
+
+		if (newFactionTypeID == oldFactionTypeID)
+			return;
+
+		foreach (auto member: m_Members)
+		{
+			if (member)
+				member.eAI_SetFactionTypeID(newFactionTypeID);
+		}
+	}
+
+	//! Prevent 3rd party mods from doing stupid shit when -newErrorsAreWarnings=1 as this would result in NULL pointers later
+	void SetFaction(Class f)
+	{
+		string tmp;
+		DumpStackString(tmp);
+		TStringArray stack = {};
+		tmp.Split("\n", stack);
+		stack.RemoveOrdered(0);
+		EXError.Error(null, "FIX-ME: Unsafe down-casting, use 'eAIFaction.Cast' for safe down-casting", stack);
+	}
+
+	eAIFaction GetFaction()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Faction;
+	}
+
+	void SetName(string name)
+	{
+		m_Name = name;
+	}
+
+	string GetName()
+	{
+		return m_Name;
+	}
+
+	/**
+	 * @brief The unique ID for this group
+	 *
+	 * @return int
+	 */
+	int GetID()
+	{
+		return m_ID;
+	}
+
+	/**
+	 * @brief Add/update target for all group members
+	 *
+	 * @param player Attacked player
+	 * @param info Attacker target information
+	 * @param update If true (default) and member is already targeting the target, update found_at_time and max_time
+	 * @param threat Initial threat level if non-zero
+	 */
+	void AddTarget(DayZPlayerImplement player, eAITargetInformation info, int max_time = -1, bool update = true, float threat = 0.0)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, info.GetDebugName(), "" + max_time, "" + update, "" + threat);
+#endif
+
+		eAIBase ai;
+		eAITarget target;
+		bool created;
+
+		DayZPlayerImplement aggressorPlayer;
+		eAIGroup aggressorGroup;
+		if (Class.CastTo(aggressorPlayer, info.GetEntity()))
+			aggressorGroup = aggressorPlayer.GetGroup();
+
+		string aggressorPrefix;
+		string victimPrefix;
+
+		foreach (DayZPlayerImplement member: m_Members)
+		{
+			if (Class.CastTo(ai, member))
+			{
+				target = info.AddAI(ai, max_time, false, created);
+
+				if (!created && update)
+					target.UpdateFoundAtTime();
+
+				if (threat > target.m_ThreatLevelActive)
+				{
+					if (!target.m_SearchOnLOSLost)
+					{
+						target.SetInitial(threat, player.GetPosition());  //! We deliberately don't use attacker position but victim position
+						target.m_SearchOnLOSLost = true;
+					}
+					else
+					{
+						target.SetThreat(threat);
+					}
+				}
+
+				if (ExpansionAISettings.Get().LogAIHitBy && aggressorPlayer && target.m_ThreatLevelActive > 0.2)
+				{
+					//! If we already see the attacker as enemy (i.e. their faction is hostile to ours), don't log aggro
+					if (aggressorGroup && !aggressorGroup.GetFaction().IsFriendly(GetFaction()))
+						continue;
+
+					target.LogFriendlyAggro(player, aggressorPrefix, victimPrefix);
+				}
+			}
+		}
+	}
+
+	/**
+	 * @brief Internal event fired when this group needs to know that any AI member is now tracking a target
+	 *
+	 * @param target The target being tracked
+	 */
+	void OnTargetTrackingStart(eAITargetInformation target)
+	{
+#ifdef DIAG_DEVELOPER
+		EXTrace.Print(EXTrace.AI, this, "OnTargetTrackingStart " + target.GetDebugName());
+#endif
+
+		m_Targets.Insert(target);
+	}
+
+	/**
+	 * @brief Return true if at least one member in group is targeting target
+	 */
+	bool IsTargeting(eAITargetInformation target)
+	{
+		if (m_Targets.Find(target) > -1)
+			return true;
+
+		return false;
+	}
+
+	/**
+	 * @brief Internal event fired when this group needs to know that none of its AI members are tracking a target anymore
+	 *
+	 * @param target The target being removed
+	 */
+	void OnTargetTrackingEnd(eAITargetInformation target)
+	{
+#ifdef DIAG_DEVELOPER
+		EXTrace.Print(EXTrace.AI, this, "OnTargetTrackingEnd " + target.GetDebugName());
+#endif
+
+		m_Targets.RemoveItem(target);
+	}
+
+	eAIGroupTargetInformation GetTargetInformation()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_TargetInformation;
+	}
+
+	//! DEPRECATED - group will never contain NULL or members that aren't alive
+	int GetMemberIndex(eAIBase ai)
+	{
+		EXError.WarnOnce(this, "GetMemberIndex() is deprecated. Please use GetIndex().");
+
+		return GetIndex(ai);
+	}
+
+	vector GetFormationPosition(eAIBase ai)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		float time = g_Game.GetTickTime();
+		bool isInitialUpdate = ai.m_eAI_FormationPositionUpdateTime == 0.0;
+		if (time - ai.m_eAI_FormationPositionUpdateTime > Math.RandomFloat(2.0, 4.0) || isInitialUpdate)
+		{
+			int index = GetIndex(ai);
+			if (index != -1)
+			{
+				auto leader = GetFormationLeader();
+				if (index > 0 && leader != GetLeader())
+					index--;
+				vector position = m_Form.GetPosition(index);
+				vector direction = m_Form.GetDirection(index);
+				
+				float extension;
+				if (leader)
+					extension = leader.Expansion_GetMovementSpeed() * 0.333333;
+				if (extension > 0.0 || isInitialUpdate)
+				{
+					for (int i = 0; i < 3; i++)
+					{
+						position[i] = position[i] + m_Form.GetLooseness();
+						if (i == 2)
+							position[i] = position[i] + extension;  //! Compensate for head start of leader
+					}
+				}
+				
+				ai.m_eAI_FormationPosition = position;
+				ai.m_eAI_FormationDirection = direction;
+				Print(string.Format("[EAI] [formation_pos] bot=%1 memberIdx=%2 local=%3 formation=%4 looseness=%5", ai.ToString(), index.ToString(), position.ToString(), m_Form.ClassName(), m_Form.GetLooseness().ToString()));
+				ai.m_eAI_FormationPositionUpdateTime = time;
+			}
+		}
+			
+		return m_Form.ToWorld(ai.m_eAI_FormationPosition);
+	}
+
+	void SetLeader(DayZPlayerImplement leader)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		if (!IsMember(leader))
+			AddMember(leader);
+
+		SetGroupMemberIndex(leader, 0);
+	}
+
+	void SetGroupMemberIndex(DayZPlayerImplement member, int index)
+	{
+		DayZPlayerImplement temp = m_Members[index];
+		if (temp == member)
+			return;
+
+		m_Members[index] = member;
+		member.SetGroupMemberIndex(index);
+
+		if (!temp)
+			return;
+
+		int i = index + 1;
+
+		for (; i < Count(); i++)
+		{
+			if (m_Members[i] == member)
+				break;
+		}
+
+		m_Members[i] = temp;
+		temp.SetGroupMemberIndex(i);
+	}
+
+	DayZPlayerImplement GetLeader()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Members[0];
+	}
+
+	eAIFormation GetFormation()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Form;
+	}
+
+	void SetFormationLeader(DayZPlayerImplement leader)
+	{
+		if (!IsMember(leader))
+			AddMember(leader);
+
+		if (GetLeader() == GetFormationLeader())
+			SetGroupMemberIndex(leader, 0);
+		else
+			SetGroupMemberIndex(leader, 1);
+	}
+
+	DayZPlayerImplement GetFormationLeader()
+	{
+		auto leader = GetLeader();
+
+		if (leader && !leader.IsAI() && m_Members.Count() > 1 && m_Waypoints.Count() > 0)
+			return m_Members[1];
+
+		return leader;
+	}
+
+	void SetFormation(eAIFormation f)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		f.SetGroup(this);
+		m_Form = f;
+		Print(string.Format("[EAI] [formation_set] group=%1 formation=%2 members=%3", this.ToString(), f.ClassName(), m_Members.Count().ToString()));
+	}
+
+	bool IsMember(DayZPlayerImplement member)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Members.Find(member) != -1;
+	}
+
+	int AddMember(DayZPlayerImplement member)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		int index = m_Members.Insert(member);
+
+		Send_SetInGroup();
+
+		return index;
+	}
+
+	void Client_SetMemberIndex(DayZPlayerImplement member, int index)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		if (index >= m_Members.Count())
+		{
+			m_Members.Resize(index + 1);
+		}
+
+		m_Members[index] = member;
+
+		int removeFrom = m_Members.Count();
+
+		for (int i = m_Members.Count() - 1; i > index; i--)
+		{
+			if (m_Members[i] != null)
+				break;
+			removeFrom = i;
+		}
+
+		m_Members.Resize(removeFrom);
+	}
+
+	bool RemoveMember(DayZPlayerImplement member, bool autoDelete = true)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, "" + member, "" + autoDelete);
+#endif
+
+		return RemoveMember(m_Members.Find(member), autoDelete);
+	}
+
+	bool RemoveMember(int i, bool autoDelete = true)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, "" + i, "" + autoDelete);
+#endif
+
+		if (i < 0 || i >= m_Members.Count())
+			return false;
+
+		auto member = m_Members[i];
+
+		m_Members.RemoveOrdered(i);
+
+		if (autoDelete && m_Members.Count() == 0)
+		{
+			Delete();
+		}
+		else
+		{
+			Send_SetInGroup();
+
+			if (member && !member.IsAlive())
+			{
+				m_Members_Deceased.Insert(member);
+
+				if (m_Persist && m_BaseName && m_Members.Count() == 0)
+					DeletePersistentFiles();
+			}
+		}
+
+		return true;
+	}
+
+	bool RemoveDeceased(DayZPlayerImplement member)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, "" + member);
+#endif
+
+		return RemoveDeceased(m_Members_Deceased.Find(member));
+	}
+
+	bool RemoveDeceased(int i)
+	{
+#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, "" + i);
+#endif
+
+		if (i < 0 || i >= m_Members_Deceased.Count())
+			return false;
+
+		m_Members_Deceased.RemoveOrdered(i);
+
+		return true;
+	}
+
+	/**
+	 * @brief send whether leader is in group with more than one other member to client
+	 * 
+	 * @note This is necessary because on client, group can only contain the members in network bubble,
+	 *       so the count does not reflect the value on server.
+	 */
+	void Send_SetInGroup()
+	{
+	#ifdef SERVER
+	#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this);
+	#endif
+
+		if (m_Members.Count() <= 2 && m_Members.Count() != m_MemberCount)
+		{
+			m_MemberCount = m_Members.Count();
+
+		}
+	#else
+		if (!g_Game.IsMultiplayer())
+		{
+			if (m_Members.Count() > 1)
+				GetDayZGame().GetExpansionGame().SetInGroup(true);
+			else
+				GetDayZGame().GetExpansionGame().SetInGroup(false);
+		}
+	#endif
+	}
+
+	/**
+	 * @brief Set whether group is in combat
+	 * 
+	 * @note If previously in combat, will only set false state if no group members are in fighting FSM
+	 */
+	void SetIsInCombat(bool state)
+	{
+	#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this, "" + state);
+	#endif
+
+		if (!state && m_IsInCombat)
+		{
+			eAIBase ai;
+			foreach (DayZPlayerImplement member: m_Members)
+			{
+				if (Class.CastTo(ai, member) && ai.m_eAI_IsFightingFSM)
+				{
+				#ifdef EXTRACE_DIAG
+					EXTrace.Print(EXTrace.AI, this, "Not setting state, AI group members still in combat");
+				#endif
+					return;
+				}
+			}
+		}
+
+		m_IsInCombat = state;
+	}
+
+	bool IsInCombat()
+	{
+		return m_IsInCombat;
+	}
+
+	bool CanLeave()
+	{
+		if (!m_Leave)
+			return false;
+
+		if (g_Game.GetTickTime() - m_LastHitTime < 30)
+			return false;
+
+		return true;
+	}
+
+	DayZPlayerImplement GetMember(int i)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Members[i];
+	}
+
+	int GetIndex(DayZPlayerImplement player)
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Members.Find(player);
+	}
+
+	/**
+	 * @brief Return random member excluding player. If group size is 1, return null.
+	 * 
+	 * @param player Player to exclude
+	 */
+	DayZPlayerImplement GetRandomMemberExcluding(DayZPlayerImplement player)
+	{
+		int count = Count();
+
+		if (count == 1)
+			return null;
+
+		int index = Math.RandomInt(0, count);
+		DayZPlayerImplement member = m_Members[index];
+
+		if (member == player)
+		{
+			if (index + 1 == count)
+				index--;
+			else
+				index++;
+
+			member = m_Members[index];
+		}
+
+		return member;
+	}
+
+	int Count()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		return m_Members.Count();
+	}
+
+	int DeceasedCount()
+	{
+		return m_Members_Deceased.Count();
+	}
+
+	//! DEPRECATED - group will never contain NULL or members that aren't alive
+	int GetAliveCount()
+	{
+		EXError.WarnOnce(this, "GetAliveCount() is deprecated. Please use Count().");
+
+		return Count();
+	}
+
+	//! Clears ALL AI from the server
+	static void Admin_ClearAllAI()
+	{
+#ifdef EAI_TRACE
+#endif
+
+		foreach (eAIGroup group : s_AllGroups)
+		{
+			group.ClearAI();
+		}
+	}
+
+	void ClearAI(bool autodelete = true, bool deferDespawnUntilLoosingAggro = false)
+	{
+	#ifdef EXTRACE_DIAG
+		auto trace = EXTrace.Start(EXTrace.AI, this);
+	#endif
+
+		int i;
+		eAIBase ai;
+
+		for (i = Count() - 1; i > -1; i--)
+		{
+			if (!Class.CastTo(ai, GetMember(i)) || ai.IsInherited(eAINPCBase))
+				continue;
+
+			if (deferDespawnUntilLoosingAggro && ai.GetThreatToSelf() >= 0.4)
+				ai.eAI_SetDespawnOnLoosingAggro(true);
+			else
+				ai.eAI_Despawn();
+		}
+
+		for (i = m_Members_Deceased.Count() - 1; i > -1; i--)
+		{
+			if (!Class.CastTo(ai, m_Members_Deceased[i]))
+				continue;
+
+			ai.eAI_Despawn();
+		}
+
+		m_ForcePatrolDespawn = false;
+	}
+
+	/**
+	 * @brief Enable swimming for the whole group so they can follow the leader
+	 */
+	void EnableSwimming(bool enable = true)
+	{
+		eAIBase ai;
+		foreach (DayZPlayerImplement member: m_Members)
+		{
+			if (Class.CastTo(ai, member))
+			{
+				if (enable)
+				{
+					if (!ai.IsRestrained())
+						ai.GetPathFinding().EnableSwimming(enable);
+				}
+				else if (!ai.IsSwimming())
+				{
+					ai.GetPathFinding().EnableSwimming(enable);
+				}
+			}
+		}
+	}
+
+	bool IsFormationLeaderSwimming()
+	{
+		DayZPlayerImplement leader = GetFormationLeader();
+		if (leader)
+			return leader.IsSwimming();
+
+		return false;
+	}
+
+	TStringArray DumpState(PlayerIdentity sender, bool includeMembers = true, string indent = string.Empty)
+	{
+		TStringArray report = {};
+
+		report.Insert(indent + string.Format("Group ID %1 %2 (%3 members)", m_ID, m_Name, Count()));
+
+		if (indent)
+			indent.Replace("-", " ");
+
+		report.Insert(indent + string.Format("|- Faction %1", m_Faction.GetName()));
+
+		string form = m_Form.ClassName().Substring(12, m_Form.ClassName().Length() - 12);
+		report.Insert(indent + string.Format("|- Formation %1 %2", form, typename.EnumToString(eAIGroupFormationState, m_FormationState)));
+
+		string lineSegment;
+		if (includeMembers)
+			lineSegment = "|";
+		else
+			lineSegment = "\\";
+
+		report.Insert(indent + string.Format(lineSegment + "- Waypoints %1 %2", m_Waypoints.Count(), typename.EnumToString(eAIWaypointBehavior, m_WaypointBehaviour)));
+
+		if (includeMembers)
+		{
+			eAIBase ai;
+			string subIndent = "|  ";
+			lineSegment = "|";
+			foreach (int i, DayZPlayerImplement member: m_Members)
+			{
+				if (Class.CastTo(ai, member))
+				{
+					if (i == Count() - 1)
+					{
+						subIndent = ".  ";
+						lineSegment = "\\";
+					}
+
+					report.Insert(indent + string.Format(lineSegment + "- AI group member %1", i));
+				}
+			}
+		}
+
+		return report;
+	}
+
+    string GetStorageDirectory()
+    {
+		return GetStorageDirectory(m_BaseName);
+    }
+
+	static string GetStorageDirectory(string baseName)
+	{
+		return "$mission:storage_" + GetDayZGame().GetExpansionGame().m_InstanceId + "\\expansion\\ai\\" + baseName + "\\";
+	}
+
+	void Save(bool saveAI = false)
+	{
+#ifdef EXTRACE
+		auto trace = EXTrace.StartStack(EXTrace.AI, eAIGroup, m_BaseName, m_Name);
+#endif 
+		
+		if (!m_BaseName)
+		{
+			EXError.Error(this, "No basename set");
+			return;
+		}
+
+		string basePath = GetStorageDirectory(m_BaseName);
+		if (!FileExist(basePath) && !ExpansionStatic.MakeDirectoryRecursive(basePath))
+			return;
+
+		string fileName = basePath + eAIGroup.BASENAME;
+		FileSerializer serializer = new FileSerializer();
+		if (serializer.Open(fileName, FileMode.WRITE))
+		{
+			serializer.Write(VERSION);
+
+			DayZPlayerImplement leader = GetFormationLeader();
+			if (leader)
+				serializer.Write(leader.GetPosition());
+			else
+				serializer.Write(vector.Zero);
+
+		#ifdef DIAG_DEVELOPER
+			EXTrace.Print(EXTrace.AI, eAIGroup, "Save - writing faction " + GetFaction() + " ID " + GetFaction().GetTypeID());
+		#endif
+
+			serializer.Write(GetFaction().GetTypeID());
+			serializer.Write(m_Name);
+
+			serializer.Write(Count());
+
+			eAIBase ai;
+			string aiPath;
+			foreach (DayZPlayerImplement member: m_Members)
+			{
+				if (Class.CastTo(ai, member))
+				{
+					serializer.Write(member.m_eAI_GroupMemberID);
+
+					if (saveAI)
+					{
+						aiPath = basePath + member.m_eAI_GroupMemberID.ToString() + ".bin";
+						ExpansionEntityStorageModule.SaveToFile(ai, aiPath);
+					}
+				}
+			}
+
+			serializer.Write(m_RoamingLocations.Count());
+			foreach (ExpansionAIRoamingLocation location: m_RoamingLocations)
+			{
+				serializer.Write(location.m_Index);
+			}
+
+			serializer.Close();
+		}
+		else
+		{
+			EXError.Error(this, "Couldn't open " + fileName + " for writing");
+		}
+	}
+
+	static void SaveAllPersistentGroups()
+	{
+#ifdef EXTRACE
+		auto trace = EXTrace.Start(EXTrace.AI, eAIGroup);
+#endif 
+		
+		foreach (eAIGroup group: s_PersistentGroups)
+		{
+			if (group.Count() > 0)
+				group.Save(true);
+		}
+	}
+
+	static bool Load(string fileName, out eAIGroup group)
+	{
+#ifdef EXTRACE
+		auto trace = EXTrace.StartStack(EXTrace.AI, eAIGroup);
+#endif 
+		
+		FileSerializer serializer = new FileSerializer();
+		if (serializer.Open(fileName, FileMode.READ))
+		{
+			int version;
+			if (!serializer.Read(version))
+				return EXError.ErrorFalse(null, "Couldn't read version from " + fileName);
+
+			vector position;
+			if (!serializer.Read(position))
+				return EXError.ErrorFalse(null, "Couldn't read group leader position from " + fileName);
+
+			int factionTypeID;
+			if (!serializer.Read(factionTypeID))
+				return EXError.ErrorFalse(null, "Couldn't read factionTypeID from " + fileName);
+
+			eAIFaction faction = eAIFaction.CreateByID(factionTypeID);
+
+		#ifdef DIAG_DEVELOPER
+			EXTrace.Print(EXTrace.AI, eAIGroup, "Load - Read faction " + faction + " ID " + factionTypeID);
+		#endif
+
+			group = CreateGroup(faction);
+
+			string name;
+			if (!serializer.Read(name))
+				return EXError.ErrorFalse(null, "Couldn't read group name from " + fileName);
+			else
+				group.SetName(name);
+	
+			int count;
+			if (!serializer.Read(count))
+				return EXError.ErrorFalse(null, "Couldn't read count from " + fileName);
+
+			int groupMemberID;
+			string basePath = ExpansionString.DirName(fileName) + "\\";
+			string aiPath;
+			EntityAI entity;
+			eAIBase ai;
+			while (count--)
+			{
+				if (!serializer.Read(groupMemberID))
+					return EXError.ErrorFalse(null, "Couldn't read groupMemberID from " + fileName);
+
+				if (groupMemberID >= group.m_NextGroupMemberID)
+					group.m_NextGroupMemberID = groupMemberID + 1;
+
+				aiPath = basePath + groupMemberID.ToString() + ".bin";
+				entity = null;
+				if (ExpansionEntityStorageModule.RestoreFromFile(aiPath, entity, null, null, false) && Class.CastTo(ai, entity))
+				{
+					ai.SetGroup(group);
+					ai.m_eAI_GroupMemberID = groupMemberID;
+				#ifdef DIAG_DEVELOPER
+					EXTrace.Print(EXTrace.AI, eAIGroup, "Restored AI " + ai + " at position " + ai.GetPosition());
+					vector surface = ExpansionStatic.GetSurfacePosition(ai.GetPosition());
+					if (ai.GetPosition()[1] < surface[1])
+						ai.SetPosition(surface);
+				#endif
+				}
+			}
+
+			int roamingCount;
+			if (!serializer.Read(roamingCount))
+			{
+				EXError.Error(null, "Couldn't read roamingCount from " + fileName);
+			}
+			else if (roamingCount > 0)
+			{
+				TIntArray locIndices = {};
+
+				int index;
+				while (roamingCount--)
+				{
+					if (!serializer.Read(index))
+					{
+						EXError.Error(null, "Couldn't read location index from " + fileName);
+						break;
+					}
+
+					locIndices.Insert(index);
+				}
+
+				array<ref ExpansionAIRoamingLocation> locations = GetExpansionSettings().GetAILocation().RoamingLocations;
+
+				foreach (int locIdx: locIndices)
+				{
+					ExpansionAIRoamingLocation location = locations[locIdx];
+					if (location)
+						group.m_RoamingLocations.Insert(location);
+				}
+			}
+
+			serializer.Close();
+
+			return true;
+		}
+		else
+		{
+			EXError.Error(null, "Couldn't open " + fileName + " for reading");
+		}
+
+		return false;
+	}
+
+	static bool ReadPosition(string fileName, out vector position)
+	{
+#ifdef EXTRACE
+		auto trace = EXTrace.StartStack(EXTrace.AI, eAIGroup);
+#endif 
+		
+		FileSerializer serializer = new FileSerializer();
+		if (serializer.Open(fileName, FileMode.READ))
+		{
+			int version;
+			if (!serializer.Read(version))
+				return EXError.ErrorFalse(null, "Couldn't read version from " + fileName);
+
+			if (!serializer.Read(position))
+				return EXError.ErrorFalse(null, "Couldn't read position from " + fileName);
+
+			serializer.Close();
+
+#ifdef EXTRACE
+#endif 
+			
+			return true;
+		}
+		else
+		{
+			EXError.Error(null, "Couldn't open " + fileName + " for reading");
+		}
+
+		return false;
+	}
+
+	void DeletePersistentFiles()
+	{
+		string path = eAIGroup.GetStorageDirectory(m_BaseName);
+		ExpansionStatic.DeleteDirectoryStructureRecursive(path, ".bin");
+	}
+
+	void RandomizeDangerousAreaAvoidanceDirection()
+	{
+		if (Math.RandomInt(0, 2))
+			m_DangerousAreaAvoidanceDirection = 1.0;
+		else
+			m_DangerousAreaAvoidanceDirection = -1.0;
+	}
+};
